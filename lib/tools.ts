@@ -1,6 +1,9 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { ApiRequestError, createReturn, getCategories, getOrder, getProductById, getProducts, preauthorizeRefund, notifyReturnInProcess } from "@/lib/api";
+import { ApiRequestError, createReturn, getCategories, getOrder, getProductById, getProductStock, getProducts, preauthorizeRefund, notifyReturnInProcess } from "@/lib/api";
+import { fetch as workflowFetch } from "workflow";
+import { start } from "workflow/api";
+import { returnFlow } from "./workflows/return-flow";
 
 export const searchProducts = tool({
   description: `Search the Vercel swag store product catalog. Use this whenever the user asks about products, what the store sells, or wants recommendations. Optionally narrow results to a single category.`,
@@ -24,7 +27,7 @@ export const searchProducts = tool({
         search: query,
         category,
         limit: 10,
-      });
+      }, { fetcher: workflowFetch });
       return {
         count: products.length,
         products: products.map((p) => ({
@@ -51,7 +54,7 @@ export const getAllCategories = tool({
   inputSchema: z.object({}),
   execute: async () => {
     try {
-      const categories = await getCategories();
+      const categories = await getCategories({ fetcher: workflowFetch });
       return {
         count: categories.length,
         categories: categories.map((c) => ({
@@ -81,68 +84,40 @@ export const returnOrder = tool({
       .describe("Why the user is returning the order."),
   }),
   execute: async ({ orderId, reason }) => {
-    try {
-      const order = await getOrder(orderId);
-      await notifyReturnInProcess(orderId);
-      await preauthorizeRefund(orderId);
-      const filed = await createReturn({
-        orderId: order.id,
-        items: order.items.map((i) => ({
-          productId: i.productId,
-          quantity: i.quantity,
-        })),
-        reason,
-      });
-      return { returnId: filed.id, status: filed.status };
-    } catch (err) {
-      const message =
-        err instanceof ApiRequestError ? err.message : "Unknown error";
-      return { error: message };
-    }
+    const run = await start(returnFlow, [orderId, reason]);
+    return { runId: run.runId, message: `Return request received for order ${orderId}.` };
   },
 });
 
 export const getProductDetails = tool({
-  description: `Get detailed information about a specific product in the Vercel swag store. Use this when the user asks about a specific item, its sizing, images, or whether it's in stock. Provide either the product's ID or slug.`,
+  description: `Fetch the full details for a single product by its ID or slug, including every image, the full description, price, tags, and live stock levels. Use this when the user asks about a specific item (e.g. "tell me more about the black hoodie") — prefer it over searchProducts once you know which product they mean, since searchProducts only returns a summary.`,
   inputSchema: z.object({
-    query: z
-      .string()
-      .optional()
-      .describe(
-        `Optional free-text search terms describing what the user is looking for, e.g. 'hoodie' or 'water bottle'.`,
-      ),
     productId: z
       .string()
-      .optional()
       .describe(
-        `Optional product ID to get details for a specific product. Only set this when the user clearly wants a specific product.`,
-      ),
-    productSlug: z
-      .string()
-      .optional()
-      .describe(
-        `Optional product slug to get details for a specific product. Only set this when the user clearly wants a specific product.`,
+        "The product's ID or slug, as returned by searchProducts (the id or slug field).",
       ),
   }),
-  execute: async ({ query, productId, productSlug }) => {
+  execute: async ({ productId }) => {
     try {
-      const product = productId
-        ? await getProductById(productId)
-        : productSlug
-          ? await getProductById(productSlug)
-          : (await getProducts({ search: query, limit: 1 }))[0];
-      if (!product) {
-        return { error: "Product not found" };
-      }
+      const [product, stock] = await Promise.all([
+        getProductById(productId, { fetcher: workflowFetch }),
+        getProductStock(productId, { fetcher: workflowFetch }),
+      ]);
       return {
         id: product.id,
         name: product.name,
         slug: product.slug,
-        images: product.images,
+        description: product.description,
         price: product.price,
         currency: product.currency,
         category: product.category,
-        description: product.description,
+        images: product.images,
+        tags: product.tags,
+        featured: product.featured,
+        stock: stock.stock,
+        inStock: stock.inStock,
+        lowStock: stock.lowStock,
       };
     } catch (err) {
       const message =
@@ -151,4 +126,3 @@ export const getProductDetails = tool({
     }
   },
 });
-  

@@ -37,6 +37,11 @@ interface RequestOptions {
   cartToken?: string;
   cache?: RequestCache;
   next?: { revalidate?: number; tags?: string[] };
+  fetcher?: typeof globalThis.fetch;
+}
+
+export interface ApiFetchOptions {
+  fetcher?: typeof globalThis.fetch;
 }
 
 interface ApiSuccess<T, M = { pagination?: PaginationMeta }> {
@@ -92,7 +97,8 @@ async function request<T>(
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const { method = "GET", body, cartToken, cache, next } = options;
+  const { method = "GET", body, cartToken, cache, next, fetcher = fetch } =
+    options;
 
   const headers: Record<string, string> = {
     "x-vercel-protection-bypass": PROTECTION_BYPASS,
@@ -110,7 +116,7 @@ async function request<T>(
 
   let res: Response;
   try {
-    res = await fetch(withBypass(path), init);
+    res = await fetcher(withBypass(path), init);
   } catch (err) {
     console.error(`[api] ${method} ${path} network error:`, err);
     throw new ApiRequestError(
@@ -238,6 +244,7 @@ export interface GetProductsParams {
 
 export async function getProducts(
   params: GetProductsParams = {},
+  options: ApiFetchOptions = {},
 ): Promise<Product[]> {
   console.log("[getProducts]", params);
   const qs = new URLSearchParams();
@@ -250,12 +257,17 @@ export async function getProducts(
 
   const path = qs.toString() ? `/products?${qs}` : "/products";
   return request<Product[]>(path, {
+    ...options,
     next: { revalidate: DEFAULT_REVALIDATE, tags: ["products"] },
   });
 }
 
-export async function getProductById(idOrSlug: string): Promise<Product> {
+export async function getProductById(
+  idOrSlug: string,
+  options: ApiFetchOptions = {},
+): Promise<Product> {
   return request<Product>(`/products/${encodeURIComponent(idOrSlug)}`, {
+    ...options,
     next: {
       revalidate: DEFAULT_REVALIDATE,
       tags: ["products", `product:${idOrSlug}`],
@@ -263,9 +275,12 @@ export async function getProductById(idOrSlug: string): Promise<Product> {
   });
 }
 
-export async function getCategories(): Promise<Category[]> {
+export async function getCategories(
+  options: ApiFetchOptions = {},
+): Promise<Category[]> {
   console.log("[getCategories]");
   return request<Category[]>("/categories", {
+    ...options,
     next: { revalidate: DEFAULT_REVALIDATE, tags: ["categories"] },
   });
 }
@@ -287,8 +302,12 @@ export async function getStoreConfig(): Promise<StoreConfig> {
   });
 }
 
-export async function getProductStock(idOrSlug: string): Promise<StockInfo> {
+export async function getProductStock(
+  idOrSlug: string,
+  options: ApiFetchOptions = {},
+): Promise<StockInfo> {
   return request<StockInfo>(`/products/${encodeURIComponent(idOrSlug)}/stock`, {
+    ...options,
     cache: "no-store",
   });
 }
